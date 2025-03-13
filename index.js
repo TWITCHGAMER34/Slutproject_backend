@@ -10,11 +10,31 @@ const rateLimit = require('express-rate-limit');
 const knexConfig = require('./knexfile.js');
 const knex = require('knex')(knexConfig.development);
 const app = express();
-const port = process.env.PORT;
+const PORT = 3000;
+const cors = require('cors');
 
 require('dotenv').config();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const corsOptions = {
+    origin: `${process.env.FRONTEND_URL}`,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Access-Control-Allow-Origin'],
+    credentials: true
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', `${process.env.FRONTEND_URL}`);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Access-Control-Allow-Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.sendStatus(204);
+});
+
 
 const transporter = nodemailer.createTransport({
     service: process.env.MAIL_SERVICE,
@@ -37,11 +57,24 @@ app.use(limiter);
 // Configure session middleware with SQLite store
 app.use(session({
     store: new SQLiteStore({ db: 'sessions.sqlite', dir: './' }),
-    secret: 'wedrftgyhujikolpoi9u8y7358923iruhfwgevgfhsdjklpdioweiutyfgsidha', // Replace with a strong secret key
+    secret: 'keyboard cat',
     resave: false,
-    saveUninitialized: true,
-    cookie: { secure: false } // Set to true if using HTTPS
+    saveUninitialized: false,
+    cookie: {
+        secure: false, // Set to true if using HTTPS
+        httpOnly: true,
+        maxAge: 1000 * 60 * 60, // 1 hour
+        sameSite: 'lax' // Adjust as needed
+    }
 }));
+
+const isLoggedIn = (req, res, next) => {
+    if (req.session.user) {
+        return next();
+    } else {
+        return res.status(401).json({message: "Not authenticated"});
+    }
+};
 
 app.post('/register', [
     body('firstname').trim().isLength({ min: 1 }).escape(),
@@ -107,6 +140,7 @@ app.post('/register', [
 
         res.status(201).json({ message: 'User registered successfully. Please check your email to verify your account.' });
     } catch (error) {
+        console.log(error);
         res.status(500).json({ error: 'Error registering user' });
     }
 });
@@ -158,19 +192,47 @@ app.post('/login', [
             return res.status(400).json({ error: 'Please verify your email before logging in' });
         }
 
-        // Save user info in session
         req.session.user = {
             id: user.id,
             email: user.email,
             username: user.username
         };
 
-        res.status(200).json({ message: 'Login successful' });
+        res.status(200).json({ message: 'Login successful', user });
     } catch (error) {
         res.status(500).json({ error: 'Error logging in user' });
     }
 });
 
-app.listen(3000, () => {
-    console.log(`Server running on port ${process.env.PORT}, http://localhost:${process.env.PORT}`);
+app.get('/check-session', [isLoggedIn], async (req, res) => {
+    if (req.session.user) {
+        return res.status(200).json({ user: req.session.user });
+    }
+
+    res.status(401).json({ error: 'User not logged in' });
+})
+
+app.get('/account', [isLoggedIn], async (req, res) => {
+    console.log(req.session.user);
+    if (req.session.user) {
+        const user = await knex('user').where({ id: req.session.user.id }).first();
+        return res.status(200).json({ user });
+    }
+
+    res.status(401).json({ error: 'User not logged in' });
+});
+
+app.post('/logout', [isLoggedIn], async (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ error: 'Error logging out' });
+        }
+
+        res.clearCookie('connect.sid');
+        res.status(200).json({ message: 'Logout successful' });
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}, http://localhost:${PORT}`);
 });
