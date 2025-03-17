@@ -12,6 +12,10 @@ const knex = require('knex')(knexConfig.development);
 const app = express();
 const PORT = 3000;
 const cors = require('cors');
+const dns = require("dns");
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 require('dotenv').config();
 app.use(express.json());
@@ -36,12 +40,69 @@ app.options('*', (req, res) => {
 });
 
 
-const transporter = nodemailer.createTransport({
-    service: process.env.MAIL_SERVICE,
-    auth: {
-        user: process.env.EMAIL,
-        pass: process.env.EMAIL_PASSWORD
+const {MAIL_HOST, MAIL_PASS, MAIL_USER, MAIL_PORT} = process.env;
+
+let mailAddress = '';
+let transporter = null;
+
+dns.setServers([
+    '1.1.1.1',
+    '8.8.8.8'
+])
+
+const setupMail = () => {
+    if (mailAddress === '') {
+        console.log(`[SMTP] Could not resolve mail host address for ${MAIL_HOST}, falling back to default...`);
+        mailAddress = MAIL_HOST;
     }
+
+    transporter = nodemailer.createTransport({
+        host: mailAddress,
+        port: MAIL_PORT,
+        secure: true,
+        auth: {
+            user: MAIL_USER,
+            pass: MAIL_PASS,
+        },
+        tls: {
+            servername: MAIL_HOST,
+            rejectUnauthorized: false,
+        },
+        connectionTimeout: 10000, // Increase timeout to 10 seconds
+    });
+
+    console.log(`[SMTP] Host set to ${mailAddress}.\n[SMTP] Verifying SMTP connection...`);
+    transporter.verify((error, success) => {
+        if (error) {
+            console.error('[SMTP] Connection error:', error);
+            throw new Error("Unrecoverable error: SMTP connection failed.");
+        } else {
+            console.log('[SMTP] Connection successful, ready to serve requests.');
+        }
+    });
+}
+
+dns.lookup(MAIL_HOST, {family: 6}, (err, address) => {
+    if (err || !address) {
+        console.warn(`[SMTP] Error resolving IPv6 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\n[SMTP] Falling back to IPv4...`);
+
+        dns.lookup(MAIL_HOST, {family: 4}, (err, address) => {
+            if (err || !address) {
+                console.warn(`[SMTP] Error resolving IPv4 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\nFalling back to default...`);
+                mailAddress = MAIL_HOST;
+                setupMail()
+                return;
+            }
+
+            console.log(`[SMTP] Mail host resolved to IPv4 address: ${address}`);
+            mailAddress = address;
+            setupMail()
+        });
+        return
+    }
+    console.log(`[SMTP] Mail host resolved to IPv6 address: ${address}`);
+    mailAddress = address;
+    setupMail()
 });
 
 // Define rate limiting rules
@@ -68,6 +129,8 @@ app.use(session({
     }
 }));
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 const isLoggedIn = (req, res, next) => {
     if (req.session.user) {
         return next();
@@ -75,6 +138,21 @@ const isLoggedIn = (req, res, next) => {
         return res.status(401).json({message: "Not authenticated"});
     }
 };
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadPath = path.join(__dirname, 'uploads'); // Use relative path
+        if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+    },
+    filename: (req, file, cb) => {
+        cb(null, `${req.session.user.id}-${Date.now()}${path.extname(file.originalname)}`);
+    }
+});
+
+const upload = multer({ storage });
 
 app.post('/register', [
     body('firstname').trim().isLength({ min: 1 }).escape(),
@@ -130,7 +208,7 @@ app.post('/register', [
         const verificationLink = `${process.env.FRONTEND_URL}/verify?token=${token}`;
 
         const mailOptions = {
-            from: process.env.EMAIL,
+            from: process.env.MAIL_USER,
             to: email,
             subject: 'Email Verification',
             text: `Hello ${sanitizedFirstname},\n\nPlease verify your email by clicking the link: ${verificationLink}\n\nThank you!`
@@ -213,14 +291,40 @@ app.get('/check-session', [isLoggedIn], async (req, res) => {
 })
 
 app.get('/account', [isLoggedIn], async (req, res) => {
-    console.log(req.session.user);
     if (req.session.user) {
         const user = await knex('user').where({ id: req.session.user.id }).first();
+        console.log(user);
         return res.status(200).json({ user });
     }
 
     res.status(401).json({ error: 'User not logged in' });
 });
+
+app.post('/account/uploadProfilePicture', [isLoggedIn], upload.single('profile_picture'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const profilePicturePath = `/uploads/${req.file.filename}`;
+    await knex('user').where({ id: req.session.user.id }).update({ profile_picture: profilePicturePath });
+    return res.status(200).json({ message: 'Profile picture uploaded successfully' });
+});
+
+app.get('/channel/:channel_name', async (req, res) => {
+    const { channel_name } = req.params;
+
+    try {
+        const channelInfo = await knex('user').where({ channel_name }).first();
+
+        if (!channelInfo) {
+            return res.status(404).json({ error: 'Channel not found' });
+        }
+
+        res.status(200).json({ channelInfo });
+    } catch (error) {
+        res.status(500).json({ error: 'Error fetching user' });
+    }
+})
 
 app.post('/logout', [isLoggedIn], async (req, res) => {
     req.session.destroy((err) => {
