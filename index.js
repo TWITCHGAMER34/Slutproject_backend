@@ -105,16 +105,6 @@ dns.lookup(MAIL_HOST, {family: 6}, (err, address) => {
     setupMail()
 });
 
-// Define rate limiting rules
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 100,
-    message: 'Too many requests from this IP, please try again after 15 minutes'
-});
-
-// Apply rate limiting to all requests
-app.use(limiter);
-
 // Configure session middleware with SQLite store
 app.use(session({
     store: new SQLiteStore({ db: 'sessions.sqlite', dir: './' }),
@@ -141,7 +131,7 @@ const isLoggedIn = (req, res, next) => {
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, 'uploads'); // Use relative path
+        const uploadPath = path.join(__dirname, 'uploads', 'profile_pics'); // Use relative path
         if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
         }
@@ -390,7 +380,7 @@ app.post('/account/uploadProfilePicture', [isLoggedIn], upload.single('profile_p
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const profilePicturePath = `/uploads/${req.file.filename}`;
+    const profilePicturePath = `/uploads/profile_pics/${req.file.filename}`;
     await knex('user').where({ id: req.session.user.id }).update({ profile_picture: profilePicturePath });
     return res.status(200).json({ message: 'Profile picture uploaded successfully' });
 });
@@ -405,15 +395,23 @@ app.get('/channel/:username', async (req, res) => {
             return res.status(404).json({ error: 'Channel not found' });
         }
 
-        res.status(200).json({ channelInfo });
+        const videos = await knex('video').where({ user_id: channelInfo.id }).select('id', 'title', 'thumbnail');
+
+        res.status(200).json({ channelInfo, videos });
     } catch (error) {
-        res.status(500).json({ error: 'Error fetching user' });
+        console.error('Error fetching channel data:', error);
+        res.status(500).json({ error: 'Error fetching channel data' });
     }
-})
+});
 
 const videoStorage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, 'uploads', 'videos'); // Use relative path for videos
+        let uploadPath;
+        if (file.fieldname === 'video') {
+            uploadPath = path.join(__dirname, 'uploads', 'videos');
+        } else if (file.fieldname === 'thumbnail') {
+            uploadPath = path.join(__dirname, 'uploads', 'thumbnails');
+        }
         if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
         }
@@ -426,13 +424,14 @@ const videoStorage = multer.diskStorage({
 
 const uploadVideo = multer({ storage: videoStorage });
 
-app.post('/uploadVideo', [isLoggedIn], uploadVideo.single('video'), async (req, res) => {
-    if (!req.file) {
+app.post('/uploadVideo', [isLoggedIn], uploadVideo.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]), async (req, res) => {
+    if (!req.files || !req.files.video) {
         return res.status(400).json({ error: 'No video uploaded' });
     }
 
     const { title, description } = req.body;
-    const videoPath = `/uploads/videos/${req.file.filename}`;
+    const videoPath = `/uploads/videos/${req.files.video[0].filename}`;
+    const thumbnailPath = req.files.thumbnail ? `/uploads/thumbnails/${req.files.thumbnail[0].filename}` : null;
 
     try {
         await knex('video').insert({
@@ -440,6 +439,7 @@ app.post('/uploadVideo', [isLoggedIn], uploadVideo.single('video'), async (req, 
             title,
             description,
             url: videoPath,
+            thumbnail: thumbnailPath,
             created_at: new Date(),
             updated_at: new Date()
         });
@@ -486,6 +486,138 @@ app.get('/videos', async (req, res) => {
         res.status(500).json({ error: 'Error fetching videos' });
     }
 })
+
+app.post('/commentVideo/:id', [isLoggedIn], async (req, res) => {
+    const { id } = req.params;
+    const { comment } = req.body;
+
+    if (!comment) {
+        return res.status(400).json({ error: 'Comment cannot be empty' });
+    }
+
+    try {
+        const video = await knex('video').where({ id }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        await knex('comments').insert({
+            user_id: req.session.user.id,
+            video_id: id,
+            comment,
+            created_at: new Date(),
+            updated_at: new Date()
+        });
+
+        res.status(201).json({ message: 'Comment posted successfully' });
+    } catch (error) {
+        console.error('Error posting comment:', error);
+        res.status(500).json({ error: 'Error posting comment' });
+    }
+});
+
+app.post('/history/:videoId', [isLoggedIn], async (req, res) => {
+    const { videoId } = req.params;
+
+    try {
+        const video = await knex('video').where({ id: videoId }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        const existingHistory = await knex('video_history')
+            .where({ user_id: req.session.user.id, video_id: videoId })
+            .first();
+
+        if (existingHistory) {
+            await knex('video_history')
+                .where({ user_id: req.session.user.id, video_id: videoId })
+                .update({ viewed_at: new Date() });
+        } else {
+            await knex('video_history').insert({
+                user_id: req.session.user.id,
+                video_id: videoId,
+                thumbnail: video.thumbnail,
+                viewed_at: new Date()
+            });
+        }
+
+        res.status(201).json({ message: 'Video history updated successfully' });
+    } catch (error) {
+        console.error('Error updating video history:', error);
+        res.status(500).json({ error: 'Error updating video history' });
+    }
+});
+
+app.post('/incrementViews/:videoId', [isLoggedIn], async (req, res) => {
+    const { videoId } = req.params;
+
+    try {
+        await knex('video').where({ id: videoId }).increment('views_count', 1);
+        res.status(200).json({ message: 'Views incremented' });
+    } catch (error) {
+        console.error('Error incrementing views:', error);
+        res.status(500).json({ error: 'Error incrementing views' });
+    }
+});
+
+app.get('/history', [isLoggedIn], async (req, res) => {
+    try {
+        const history = await knex('video_history')
+            .join('video', 'video_history.video_id', 'video.id')
+            .select('video.id', 'video.title', 'video.thumbnail')
+            .where('video_history.user_id', req.session.user.id)
+            .orderBy('video_history.viewed_at', 'desc');
+
+        res.status(200).json({ history });
+    } catch (error) {
+        console.error('Error fetching history:', error);
+        res.status(500).json({ error: 'Error fetching history' });
+    }
+});
+
+app.delete('/video/:videoId', [isLoggedIn], async (req, res) => {
+    const { videoId } = req.params;
+
+    try {
+        const video = await knex('video').where({ id: videoId }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        if (video.user_id !== req.session.user.id) {
+            return res.status(403).json({ error: 'You are not authorized to delete this video' });
+        }
+
+        await knex('video').where({ id: videoId }).del();
+        res.status(200).json({ message: 'Video deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting video:', error);
+        res.status(500).json({ error: 'Error deleting video' });
+    }
+})
+
+app.get('/search', async (req, res) => {
+    const { query } = req.query;
+
+    if (!query) {
+        return res.status(400).json({ error: 'Query parameter is required' });
+    }
+
+    try {
+        const videos = await knex('video')
+            .where('title', 'like', `%${query}%`)
+            .select('id', 'title', 'thumbnail');
+
+        res.status(200).json({ videos });
+    } catch (error) {
+        console.error('Error fetching search results:', error);
+        res.status(500).json({ error: 'Error fetching search results' });
+    }
+});
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}, http://localhost:${PORT}`);
