@@ -13,7 +13,6 @@ exports.up = function(knex) {
         table.integer('views_count').defaultTo(0);
         table.integer('likes_count').defaultTo(0);
         table.integer('dislikes_count').defaultTo(0);
-        table.binary('file').notNullable();
         table.timestamp('created_at').defaultTo(knex.fn.now());
         table.timestamp('updated_at').defaultTo(knex.fn.now());
     });

@@ -15,7 +15,6 @@ exports.up = function(knex) {
         table.timestamp('created_at').defaultTo(knex.fn.now());
         table.timestamp('updated_at').defaultTo(knex.fn.now());
         table.text('bio');
-        table.string('channel_name').notNullable().unique();
         table.integer('subscribers_count').defaultTo(0);
         table.integer('videos_count').defaultTo(0);
     });

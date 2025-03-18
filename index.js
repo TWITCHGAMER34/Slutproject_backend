@@ -162,14 +162,13 @@ app.post('/register', [
     body('password').isLength({ min: 6 }),
     body('confirm_password').isLength({ min: 6 }),
     body('username').trim().isLength({ min: 1 }).escape(),
-    body('channel_name').trim().isLength({ min: 1 }).escape()
 ], async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
         return res.status(400).json({ errors: errors.array() });
     }
 
-    const { firstname, lastname, DOB, email, password, confirm_password, username, channel_name } = req.body;
+    const { firstname, lastname, DOB, email, password, confirm_password, username} = req.body;
 
     if (password !== confirm_password) {
         return res.status(400).json({ error: 'Passwords do not match' });
@@ -179,7 +178,6 @@ app.post('/register', [
         const sanitizedFirstname = sanitizeHtml(firstname);
         const sanitizedLastname = sanitizeHtml(lastname);
         const sanitizedUsername = sanitizeHtml(username);
-        const sanitizedChannelName = sanitizeHtml(channel_name);
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -190,7 +188,6 @@ app.post('/register', [
             firstname: sanitizedFirstname,
             lastname: sanitizedLastname,
             DOB,
-            channel_name: sanitizedChannelName,
             created_at: new Date(),
             updated_at: new Date(),
             verified: false
@@ -282,6 +279,94 @@ app.post('/login', [
     }
 });
 
+app.get('/getUser/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const user = await knex('user').where({ id }).first();
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        res.status(200).json({ user });
+    } catch (error) {
+        res.status(500).json({ error: 'Error fetching user' });
+    }
+});
+
+app.post('/likeVideo/:id', [isLoggedIn], async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const video = await knex('video').where({ id }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        const existingLike = await knex('video_likes').where({ user_id: req.session.user.id, video_id: id }).first();
+        const existingDislike = await knex('video_dislikes').where({ user_id: req.session.user.id, video_id: id }).first();
+
+        if (existingLike) {
+            return res.status(400).json({ error: 'You have already liked this video' });
+        }
+
+        if (existingDislike) {
+            await knex('video_dislikes').where({ user_id: req.session.user.id, video_id: id }).del();
+            await knex('video').where({ id }).decrement('dislikes_count', 1);
+        }
+
+        await knex('video_likes').insert({
+            user_id: req.session.user.id,
+            video_id: id
+        });
+
+        await knex('video').where({ id }).increment('likes_count', 1);
+
+        res.status(201).json({ message: 'Video liked successfully' });
+    } catch (error) {
+        console.error('Error liking video:', error);
+        res.status(500).json({ error: 'Error liking video' });
+    }
+});
+
+app.post('/dislikeVideo/:id', [isLoggedIn], async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const video = await knex('video').where({ id }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        const existingDislike = await knex('video_dislikes').where({ user_id: req.session.user.id, video_id: id }).first();
+        const existingLike = await knex('video_likes').where({ user_id: req.session.user.id, video_id: id }).first();
+
+        if (existingDislike) {
+            return res.status(400).json({ error: 'You have already disliked this video' });
+        }
+
+        if (existingLike) {
+            await knex('video_likes').where({ user_id: req.session.user.id, video_id: id }).del();
+            await knex('video').where({ id }).decrement('likes_count', 1);
+        }
+
+        await knex('video_dislikes').insert({
+            user_id: req.session.user.id,
+            video_id: id
+        });
+
+        await knex('video').where({ id }).increment('dislikes_count', 1);
+
+        res.status(201).json({ message: 'Video disliked successfully' });
+    } catch (error) {
+        console.error('Error disliking video:', error);
+        res.status(500).json({ error: 'Error disliking video' });
+    }
+});
+
 app.get('/check-session', [isLoggedIn], async (req, res) => {
     if (req.session.user) {
         return res.status(200).json({ user: req.session.user });
@@ -310,11 +395,11 @@ app.post('/account/uploadProfilePicture', [isLoggedIn], upload.single('profile_p
     return res.status(200).json({ message: 'Profile picture uploaded successfully' });
 });
 
-app.get('/channel/:channel_name', async (req, res) => {
-    const { channel_name } = req.params;
+app.get('/channel/:username', async (req, res) => {
+    const { username } = req.params;
 
     try {
-        const channelInfo = await knex('user').where({ channel_name }).first();
+        const channelInfo = await knex('user').where({ username }).first();
 
         if (!channelInfo) {
             return res.status(404).json({ error: 'Channel not found' });
@@ -326,6 +411,62 @@ app.get('/channel/:channel_name', async (req, res) => {
     }
 })
 
+const videoStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadPath = path.join(__dirname, 'uploads', 'videos'); // Use relative path for videos
+        if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+    },
+    filename: (req, file, cb) => {
+        cb(null, `${req.session.user.id}-${Date.now()}${path.extname(file.originalname)}`);
+    }
+});
+
+const uploadVideo = multer({ storage: videoStorage });
+
+app.post('/uploadVideo', [isLoggedIn], uploadVideo.single('video'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No video uploaded' });
+    }
+
+    const { title, description } = req.body;
+    const videoPath = `/uploads/videos/${req.file.filename}`;
+
+    try {
+        await knex('video').insert({
+            user_id: req.session.user.id,
+            title,
+            description,
+            url: videoPath,
+            created_at: new Date(),
+            updated_at: new Date()
+        });
+
+        res.status(201).json({ message: 'Video uploaded successfully' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Error uploading video' });
+    }
+});
+
+app.get('/getVideo/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const video = await knex('video').where({ id }).first();
+
+        if (!video) {
+            return res.status(404).json({ error: 'Video not found' });
+        }
+
+        res.status(200).json({ video });
+    } catch (error) {
+        res.status(500).json({ error: 'Error fetching video' });
+    }
+});
+
 app.post('/logout', [isLoggedIn], async (req, res) => {
     req.session.destroy((err) => {
         if (err) {
@@ -336,6 +477,15 @@ app.post('/logout', [isLoggedIn], async (req, res) => {
         res.status(200).json({ message: 'Logout successful' });
     });
 });
+
+app.get('/videos', async (req, res) => {
+    try {
+        const videos = await knex('video').select('*');
+        res.status(200).json({ videos });
+    } catch (error) {
+        res.status(500).json({ error: 'Error fetching videos' });
+    }
+})
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}, http://localhost:${PORT}`);
