@@ -517,6 +517,22 @@ app.post('/commentVideo/:id', [isLoggedIn], async (req, res) => {
     }
 });
 
+app.get('/getComments/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const comments = await knex('comments')
+            .join('user', 'comments.user_id', 'user.id')
+            .where('comments.video_id', id)
+            .select('comments.id', 'comments.comment', 'comments.created_at', 'user.username');
+
+        res.status(200).json({ comments });
+    } catch (error) {
+        console.error('Error fetching comments:', error);
+        res.status(500).json({ error: 'Error fetching comments' });
+    }
+});
+
 app.post('/history/:videoId', [isLoggedIn], async (req, res) => {
     const { videoId } = req.params;
 
@@ -616,6 +632,25 @@ app.get('/search', async (req, res) => {
     } catch (error) {
         console.error('Error fetching search results:', error);
         res.status(500).json({ error: 'Error fetching search results' });
+    }
+});
+
+app.post('/updateDescription', [isLoggedIn], async (req, res) => {
+    const { bio } = req.body;
+
+    if (!bio) {
+        return res.status(400).json({ error: 'Description is required' });
+    }
+
+    try {
+        await knex('user')
+            .where({ id: req.session.user.id })
+            .update({ bio, updated_at: new Date() });
+
+        res.status(200).json({ message: 'Description updated successfully' });
+    } catch (error) {
+        console.error('Error updating description:', error);
+        res.status(500).json({ error: 'Error updating description' });
     }
 });
 
