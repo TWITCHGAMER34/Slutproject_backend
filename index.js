@@ -480,12 +480,22 @@ app.post('/logout', [isLoggedIn], async (req, res) => {
 
 app.get('/videos', async (req, res) => {
     try {
-        const videos = await knex('video').select('*');
+        const videos = await knex('video')
+            .join('user', 'video.user_id', 'user.id')
+            .select(
+                'video.id',
+                'video.title',
+                'video.thumbnail',
+                'video.views_count',
+                'video.description',
+                'video.created_at',
+                'user.username as username'
+            );
         res.status(200).json({ videos });
     } catch (error) {
         res.status(500).json({ error: 'Error fetching videos' });
     }
-})
+});
 
 app.post('/commentVideo/:id', [isLoggedIn], async (req, res) => {
     const { id } = req.params;
@@ -626,7 +636,7 @@ app.get('/search', async (req, res) => {
     try {
         const videos = await knex('video')
             .where('title', 'like', `%${query}%`)
-            .select('id', 'title', 'thumbnail');
+            .select('id', 'title', 'thumbnail', 'views_count', 'description', 'created_at', 'username');
 
         res.status(200).json({ videos });
     } catch (error) {
