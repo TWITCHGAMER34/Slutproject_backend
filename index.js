@@ -636,7 +636,7 @@ app.get('/search', async (req, res) => {
     try {
         const videos = await knex('video')
             .where('title', 'like', `%${query}%`)
-            .select('id', 'title', 'thumbnail', 'views_count', 'description', 'created_at', 'username');
+            .select('id', 'title', 'thumbnail', 'views_count', 'description', 'created_at');
 
         res.status(200).json({ videos });
     } catch (error) {
