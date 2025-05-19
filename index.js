@@ -1,3 +1,9 @@
+/**
+ * Main backend server for Ninjahalfpipe.
+ * Handles authentication, video management, user profiles, and more.
+ * Uses Express, Knex, SQLite, and various middleware.
+ */
+
 const express = require('express');
 const bcrypt = require('bcrypt');
 const nodemailer = require('nodemailer');
@@ -21,6 +27,9 @@ require('dotenv').config();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+/**
+ * CORS configuration for frontend-backend communication.
+ */
 const corsOptions = {
     origin: `${process.env.FRONTEND_URL}`,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -30,7 +39,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Handle preflight requests
+// Handle preflight requests for CORS
 app.options('*', (req, res) => {
     res.header('Access-Control-Allow-Origin', `${process.env.FRONTEND_URL}`);
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
@@ -39,17 +48,20 @@ app.options('*', (req, res) => {
     res.sendStatus(204);
 });
 
-
 const {MAIL_HOST, MAIL_PASS, MAIL_USER, MAIL_PORT} = process.env;
 
 let mailAddress = '';
 let transporter = null;
 
+// Set DNS servers for mail resolution
 dns.setServers([
     '1.1.1.1',
     '8.8.8.8'
-])
+]);
 
+/**
+ * Setup mail transporter for nodemailer.
+ */
 const setupMail = () => {
     if (mailAddress === '') {
         console.log(`[SMTP] Could not resolve mail host address for ${MAIL_HOST}, falling back to default...`);
@@ -68,7 +80,7 @@ const setupMail = () => {
             servername: MAIL_HOST,
             rejectUnauthorized: false,
         },
-        connectionTimeout: 10000, // Increase timeout to 10 seconds
+        connectionTimeout: 10000, // 10 seconds timeout
     });
 
     console.log(`[SMTP] Host set to ${mailAddress}.\n[SMTP] Verifying SMTP connection...`);
@@ -82,6 +94,7 @@ const setupMail = () => {
     });
 }
 
+// Try to resolve mail host address (IPv6, fallback to IPv4)
 dns.lookup(MAIL_HOST, {family: 6}, (err, address) => {
     if (err || !address) {
         console.warn(`[SMTP] Error resolving IPv6 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\n[SMTP] Falling back to IPv4...`);
@@ -90,19 +103,19 @@ dns.lookup(MAIL_HOST, {family: 6}, (err, address) => {
             if (err || !address) {
                 console.warn(`[SMTP] Error resolving IPv4 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\nFalling back to default...`);
                 mailAddress = MAIL_HOST;
-                setupMail()
+                setupMail();
                 return;
             }
 
             console.log(`[SMTP] Mail host resolved to IPv4 address: ${address}`);
             mailAddress = address;
-            setupMail()
+            setupMail();
         });
-        return
+        return;
     }
     console.log(`[SMTP] Mail host resolved to IPv6 address: ${address}`);
     mailAddress = address;
-    setupMail()
+    setupMail();
 });
 
 // Configure session middleware with SQLite store
@@ -115,12 +128,16 @@ app.use(session({
         secure: false, // Set to true if using HTTPS
         httpOnly: true,
         maxAge: 1000 * 60 * 60, // 1 hour
-        sameSite: 'lax' // Adjust as needed
+        sameSite: 'lax'
     }
 }));
 
+// Serve static files for profile pictures and uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+/**
+ * Middleware to check if user is logged in.
+ */
 const isLoggedIn = (req, res, next) => {
     if (req.session.user) {
         return next();
@@ -129,9 +146,12 @@ const isLoggedIn = (req, res, next) => {
     }
 };
 
+/**
+ * Multer storage config for profile pictures.
+ */
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, 'uploads', 'profile_pics'); // Use relative path
+        const uploadPath = path.join(__dirname, 'uploads', 'profile_pics');
         if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
         }
@@ -144,6 +164,10 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+/**
+ * User registration route.
+ * Validates input, hashes password, sends verification email.
+ */
 app.post('/register', [
     body('firstname').trim().isLength({ min: 1 }).escape(),
     body('lastname').trim().isLength({ min: 1 }).escape(),
@@ -165,12 +189,15 @@ app.post('/register', [
     }
 
     try {
+        // Sanitize input
         const sanitizedFirstname = sanitizeHtml(firstname);
         const sanitizedLastname = sanitizeHtml(lastname);
         const sanitizedUsername = sanitizeHtml(username);
 
+        // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // Insert user into DB
         const [userId] = await knex('user').insert({
             username: sanitizedUsername,
             email,
@@ -183,6 +210,7 @@ app.post('/register', [
             verified: false
         }).returning('id');
 
+        // Generate verification token
         const token = crypto.randomBytes(32).toString('hex');
         const tokenExpiration = new Date(Date.now() + 3600000);
 
@@ -192,8 +220,8 @@ app.post('/register', [
             expires_at: tokenExpiration
         });
 
+        // Send verification email
         const verificationLink = `${process.env.FRONTEND_URL}/verify?token=${token}`;
-
         const mailOptions = {
             from: process.env.MAIL_USER,
             to: email,
@@ -210,6 +238,10 @@ app.post('/register', [
     }
 });
 
+/**
+ * Email verification route.
+ * Verifies user using token sent to email.
+ */
 app.get('/verify', async (req, res) => {
     const { token } = req.query;
 
@@ -229,6 +261,10 @@ app.get('/verify', async (req, res) => {
     }
 });
 
+/**
+ * User login route.
+ * Validates credentials and starts session.
+ */
 app.post('/login', [
     body('email').isEmail().normalizeEmail(),
     body('password').isLength({ min: 6 })
@@ -257,6 +293,7 @@ app.post('/login', [
             return res.status(400).json({ error: 'Please verify your email before logging in' });
         }
 
+        // Set session user
         req.session.user = {
             id: user.id,
             email: user.email,
@@ -269,6 +306,9 @@ app.post('/login', [
     }
 });
 
+/**
+ * Get user by ID.
+ */
 app.get('/getUser/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -285,6 +325,10 @@ app.get('/getUser/:id', async (req, res) => {
     }
 });
 
+/**
+ * Like a video.
+ * Handles like/dislike logic and updates counts.
+ */
 app.post('/likeVideo/:id', [isLoggedIn], async (req, res) => {
     const { id } = req.params;
 
@@ -295,6 +339,7 @@ app.post('/likeVideo/:id', [isLoggedIn], async (req, res) => {
             return res.status(404).json({ error: 'Video not found' });
         }
 
+        // Check if already liked/disliked
         const existingLike = await knex('video_likes').where({ user_id: req.session.user.id, video_id: id }).first();
         const existingDislike = await knex('video_dislikes').where({ user_id: req.session.user.id, video_id: id }).first();
 
@@ -321,6 +366,10 @@ app.post('/likeVideo/:id', [isLoggedIn], async (req, res) => {
     }
 });
 
+/**
+ * Dislike a video.
+ * Handles like/dislike logic and updates counts.
+ */
 app.post('/dislikeVideo/:id', [isLoggedIn], async (req, res) => {
     const { id } = req.params;
 
@@ -331,6 +380,7 @@ app.post('/dislikeVideo/:id', [isLoggedIn], async (req, res) => {
             return res.status(404).json({ error: 'Video not found' });
         }
 
+        // Check if already disliked/liked
         const existingDislike = await knex('video_dislikes').where({ user_id: req.session.user.id, video_id: id }).first();
         const existingLike = await knex('video_likes').where({ user_id: req.session.user.id, video_id: id }).first();
 
@@ -357,14 +407,20 @@ app.post('/dislikeVideo/:id', [isLoggedIn], async (req, res) => {
     }
 });
 
+/**
+ * Check if user session is active.
+ */
 app.get('/check-session', [isLoggedIn], async (req, res) => {
     if (req.session.user) {
         return res.status(200).json({ user: req.session.user });
     }
 
     res.status(401).json({ error: 'User not logged in' });
-})
+});
 
+/**
+ * Get account info for logged-in user.
+ */
 app.get('/account', [isLoggedIn], async (req, res) => {
     if (req.session.user) {
         const user = await knex('user').where({ id: req.session.user.id }).first();
@@ -375,6 +431,9 @@ app.get('/account', [isLoggedIn], async (req, res) => {
     res.status(401).json({ error: 'User not logged in' });
 });
 
+/**
+ * Upload profile picture for user.
+ */
 app.post('/account/uploadProfilePicture', [isLoggedIn], upload.single('profile_picture'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
@@ -385,6 +444,9 @@ app.post('/account/uploadProfilePicture', [isLoggedIn], upload.single('profile_p
     return res.status(200).json({ message: 'Profile picture uploaded successfully' });
 });
 
+/**
+ * Get channel info and videos by username.
+ */
 app.get('/channel/:username', async (req, res) => {
     const { username } = req.params;
 
@@ -404,6 +466,9 @@ app.get('/channel/:username', async (req, res) => {
     }
 });
 
+/**
+ * Multer storage config for video and thumbnail uploads.
+ */
 const videoStorage = multer.diskStorage({
     destination: (req, file, cb) => {
         let uploadPath;
@@ -424,6 +489,9 @@ const videoStorage = multer.diskStorage({
 
 const uploadVideo = multer({ storage: videoStorage });
 
+/**
+ * Upload a new video (and optional thumbnail).
+ */
 app.post('/uploadVideo', [isLoggedIn], uploadVideo.fields([{ name: 'video', maxCount: 1 }, { name: 'thumbnail', maxCount: 1 }]), async (req, res) => {
     if (!req.files || !req.files.video) {
         return res.status(400).json({ error: 'No video uploaded' });
@@ -451,6 +519,9 @@ app.post('/uploadVideo', [isLoggedIn], uploadVideo.fields([{ name: 'video', maxC
     }
 });
 
+/**
+ * Get video by ID.
+ */
 app.get('/getVideo/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -467,6 +538,9 @@ app.get('/getVideo/:id', async (req, res) => {
     }
 });
 
+/**
+ * Logout user and destroy session.
+ */
 app.post('/logout', [isLoggedIn], async (req, res) => {
     req.session.destroy((err) => {
         if (err) {
@@ -478,6 +552,10 @@ app.post('/logout', [isLoggedIn], async (req, res) => {
     });
 });
 
+
+/**
+ * Get all videos.
+ */
 app.get('/videos', async (req, res) => {
     try {
         const videos = await knex('video')
@@ -496,6 +574,12 @@ app.get('/videos', async (req, res) => {
         res.status(500).json({ error: 'Error fetching videos' });
     }
 });
+
+/**
+ * Post a comment on a video.
+ * Validates input and checks if video exists.
+ * Handles comment insertion into DB.
+ */
 
 app.post('/commentVideo/:id', [isLoggedIn], async (req, res) => {
     const { id } = req.params;
@@ -527,6 +611,12 @@ app.post('/commentVideo/:id', [isLoggedIn], async (req, res) => {
     }
 });
 
+
+/**
+ * Get comments for a video.
+ * Fetches comments from DB and joins with user table to get usernames.
+ * Handles error cases.
+ */
 app.get('/getComments/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -543,6 +633,13 @@ app.get('/getComments/:id', async (req, res) => {
     }
 });
 
+
+/**
+ * Update video history.
+ * Checks if video exists and if user has already viewed it.
+ * Handles insertion or update of video history in DB.
+ * Also updates the viewed_at timestamp.
+ */
 app.post('/history/:videoId', [isLoggedIn], async (req, res) => {
     const { videoId } = req.params;
 
@@ -577,6 +674,11 @@ app.post('/history/:videoId', [isLoggedIn], async (req, res) => {
     }
 });
 
+/**
+ * Increment video views count.
+ * Checks if video exists and increments views_count in DB.
+ * Handles error cases.
+ */
 app.post('/incrementViews/:videoId', [isLoggedIn], async (req, res) => {
     const { videoId } = req.params;
 
@@ -589,6 +691,10 @@ app.post('/incrementViews/:videoId', [isLoggedIn], async (req, res) => {
     }
 });
 
+
+/**
+ * Get video history for logged-in user.
+ */
 app.get('/history', [isLoggedIn], async (req, res) => {
     try {
         const history = await knex('video_history')
@@ -604,6 +710,11 @@ app.get('/history', [isLoggedIn], async (req, res) => {
     }
 });
 
+/**
+ * Delete a video.
+ * Checks if video exists and if user is authorized to delete it.
+ * Handles deletion from DB.
+ */
 app.delete('/video/:videoId', [isLoggedIn], async (req, res) => {
     const { videoId } = req.params;
 
@@ -626,14 +737,20 @@ app.delete('/video/:videoId', [isLoggedIn], async (req, res) => {
     }
 })
 
+/**
+ * Route: GET /search
+ * Description: Search for videos by title and include uploader's username.
+ */
 app.get('/search', async (req, res) => {
     const { query } = req.query;
 
+    // Validate that a search query is provided
     if (!query) {
         return res.status(400).json({ error: 'Query parameter is required' });
     }
 
     try {
+        // Join video and user tables to get video info and uploader's username
         const videos = await knex('video')
             .join('user', 'video.user_id', 'user.id')
             .where('video.title', 'like', `%${query}%`)
@@ -647,32 +764,46 @@ app.get('/search', async (req, res) => {
                 'user.username as username'
             );
 
+        // Return matching videos
         res.status(200).json({ videos });
     } catch (error) {
+        // Log and return error if search fails
         console.error('Error fetching search results:', error);
         res.status(500).json({ error: 'Error fetching search results' });
     }
 });
 
+/**
+ * Route: POST /updateDescription
+ * Description: Update the logged-in user's bio/description.
+ * Requires authentication.
+ */
 app.post('/updateDescription', [isLoggedIn], async (req, res) => {
     const { bio } = req.body;
 
+    // Validate that a bio/description is provided
     if (!bio) {
         return res.status(400).json({ error: 'Description is required' });
     }
 
     try {
+        // Update the user's bio in the database
         await knex('user')
             .where({ id: req.session.user.id })
             .update({ bio, updated_at: new Date() });
 
+        // Respond with success message
         res.status(200).json({ message: 'Description updated successfully' });
     } catch (error) {
+        // Log and return error if update fails
         console.error('Error updating description:', error);
         res.status(500).json({ error: 'Error updating description' });
     }
 });
 
+/**
+ * Start the Express server.
+ */
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}, http://localhost:${PORT}`);
 });
