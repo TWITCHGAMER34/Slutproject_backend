@@ -31,7 +31,7 @@ app.use(express.urlencoded({ extended: true }));
  * CORS configuration for frontend-backend communication.
  */
 const corsOptions = {
-    origin: `${process.env.FRONTEND_URL}`,
+    origin: `https://ninjahalfpipe.natninjorna.se`,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Access-Control-Allow-Origin'],
     credentials: true
@@ -41,7 +41,7 @@ app.use(cors(corsOptions));
 
 // Handle preflight requests for CORS
 app.options('*', (req, res) => {
-    res.header('Access-Control-Allow-Origin', `${process.env.FRONTEND_URL}`);
+    res.header('Access-Control-Allow-Origin', `https://ninjahalfpipe.natninjorna.se`);
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-auth-token, Access-Control-Allow-Origin');
     res.header('Access-Control-Allow-Credentials', 'true');
@@ -94,27 +94,15 @@ const setupMail = () => {
     });
 }
 
-// Try to resolve mail host address (IPv6, fallback to IPv4)
-dns.lookup(MAIL_HOST, {family: 6}, (err, address) => {
+// Only resolve IPv4 for mail host
+dns.lookup(MAIL_HOST, { family: 4 }, (err, address) => {
     if (err || !address) {
-        console.warn(`[SMTP] Error resolving IPv6 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\n[SMTP] Falling back to IPv4...`);
-
-        dns.lookup(MAIL_HOST, {family: 4}, (err, address) => {
-            if (err || !address) {
-                console.warn(`[SMTP] Error resolving IPv4 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\nFalling back to default...`);
-                mailAddress = MAIL_HOST;
-                setupMail();
-                return;
-            }
-
-            console.log(`[SMTP] Mail host resolved to IPv4 address: ${address}`);
-            mailAddress = address;
-            setupMail();
-        });
-        return;
+        console.warn(`[SMTP] Error resolving IPv4 address for ${MAIL_HOST}: ${err ? err.message : 'No address found'}\nFalling back to default...`);
+        mailAddress = MAIL_HOST;
+    } else {
+        console.log(`[SMTP] Mail host resolved to IPv4 address: ${address}`);
+        mailAddress = address;
     }
-    console.log(`[SMTP] Mail host resolved to IPv6 address: ${address}`);
-    mailAddress = address;
     setupMail();
 });
 
@@ -699,7 +687,15 @@ app.get('/history', [isLoggedIn], async (req, res) => {
     try {
         const history = await knex('video_history')
             .join('video', 'video_history.video_id', 'video.id')
-            .select('video.id', 'video.title', 'video.thumbnail')
+            .join('user', 'video.user_id', 'user.id')
+            .select(
+                'video.id',
+                'video.title',
+                'video.thumbnail',
+                'video.views_count',
+                'video.created_at',
+                'user.username as uploader'
+            )
             .where('video_history.user_id', req.session.user.id)
             .orderBy('video_history.viewed_at', 'desc');
 
@@ -798,6 +794,66 @@ app.post('/updateDescription', [isLoggedIn], async (req, res) => {
         // Log and return error if update fails
         console.error('Error updating description:', error);
         res.status(500).json({ error: 'Error updating description' });
+    }
+});
+
+app.post('/changePassword', [isLoggedIn], async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+        return res.status(400).json({ error: 'Missing password fields' });
+    }
+
+    try {
+        const user = await knex('user').where({ id: req.session.user.id }).first();
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ error: 'Current password is incorrect' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await knex('user').where({ id: user.id }).update({ password: hashedPassword, updated_at: new Date() });
+
+        res.status(200).json({ message: 'Password changed successfully' });
+    } catch (error) {
+        console.error('Error changing password:', error);
+        res.status(500).json({ error: 'Error changing password' });
+    }
+});
+
+app.post('/updateEmail', [isLoggedIn], async (req, res) => {
+    body('email').isEmail().normalizeEmail();
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Basic email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    try {
+        // Check if email is already in use
+        const existing = await knex('user').where({ email }).first();
+        if (existing && existing.id !== req.session.user.id) {
+            return res.status(400).json({ error: 'Email already in use' });
+        }
+
+        await knex('user')
+            .where({ id: req.session.user.id })
+            .update({ email, updated_at: new Date() });
+
+        res.status(200).json({ message: 'Email updated successfully' });
+    } catch (error) {
+        console.error('Error updating email:', error);
+        res.status(500).json({ error: 'Error updating email' });
     }
 });
 
